@@ -442,3 +442,61 @@ channel-aware dry-run: channel_features shape = [2, 3, 3]
 blind packed-local compatibility dry-run: passed
 channel-aware tiny CPU train 2 steps: loss finite, grad_norm finite, param_delta > 0
 ```
+
+## 10. Best Checkpoint 与独立 Re-Eval
+
+为避免只看 final checkpoint 或少量 eval batch 导致误判，训练脚本已新增：
+
+```text
+receiver_best.pt
+```
+
+保存规则：
+
+```text
+每次 eval 后，如果 eval_token_accuracy 刷新历史最高值，
+立即保存完整 checkpoint 到 receiver_best.pt。
+training_log.pt 也记录 best_eval_token_accuracy 和 best_step。
+```
+
+新增独立评估脚本：
+
+```text
+eval_dd_token_receiver_checkpoint.py
+```
+
+用途：
+
+```text
+加载 receiver_best.pt 或 checkpoint_step_*.pt
+使用更多 eval_batches 做稳定重评估
+输出 *_reeval.pt
+```
+
+云端重评估示例：
+
+```bash
+python eval_dd_token_receiver_checkpoint.py \
+  --checkpoint outputs/stage7b_receiver_train/ca_packed_cb256_random_delay_noawgn_5k_seed1/receiver_best.pt \
+  --eval-batches 128 \
+  --batch-size 8 \
+  --device cuda
+```
+
+也可以重评估某个中间 checkpoint：
+
+```bash
+python eval_dd_token_receiver_checkpoint.py \
+  --checkpoint outputs/stage7b_receiver_train/ca_packed_cb256_random_delay_noawgn_5k_seed1/checkpoint_step_5000.pt \
+  --output outputs/stage7b_receiver_train/ca_packed_cb256_random_delay_noawgn_5k_seed1/checkpoint_step_5000_reeval128.pt \
+  --eval-batches 128 \
+  --batch-size 8 \
+  --device cuda
+```
+
+本地验证已通过：
+
+```text
+tiny CPU train 2 steps: receiver_best.pt saved at best eval step
+eval_dd_token_receiver_checkpoint.py: successfully loaded receiver_best.pt and re-evaluated
+```

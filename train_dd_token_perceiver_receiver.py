@@ -260,6 +260,19 @@ def make_checkpoint(
     return checkpoint
 
 
+def best_eval_from_log(log_rows: list[dict[str, float]]) -> tuple[float, int]:
+    best_accuracy = float("-inf")
+    best_step = 0
+    for row in log_rows:
+        if "eval_token_accuracy" not in row or "step" not in row:
+            continue
+        accuracy = float(row["eval_token_accuracy"])
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_step = int(row["step"])
+    return best_accuracy, best_step
+
+
 def restore_checkpoint(
     args: argparse.Namespace,
     receiver: DDTokenPerceiverReceiver,
@@ -474,6 +487,7 @@ def train(args: argparse.Namespace) -> None:
     )
 
     start_step, log_rows = restore_checkpoint(args, receiver, optimizer, generator)
+    best_eval_accuracy, best_eval_step = best_eval_from_log(log_rows)
     if start_step > args.num_steps:
         print(
             f"resume checkpoint is already at step {start_step - 1}, "
@@ -542,10 +556,23 @@ def train(args: argparse.Namespace) -> None:
                 f"| snr_db {snr_db:.2f}"
             )
             log_rows.append(log_row)
+            if log_row["eval_token_accuracy"] > best_eval_accuracy:
+                best_eval_accuracy = log_row["eval_token_accuracy"]
+                best_eval_step = step
+                best_checkpoint = make_checkpoint(args, step, receiver, optimizer, generator, log_rows)
+                best_checkpoint["best_eval_token_accuracy"] = float(best_eval_accuracy)
+                best_checkpoint["best_step"] = int(best_eval_step)
+                torch.save(best_checkpoint, args.output_dir / "receiver_best.pt")
+                print(
+                    f"new best eval_acc {best_eval_accuracy:.4f} "
+                    f"at step {best_eval_step}; saved receiver_best.pt"
+                )
             torch.save(
                 {
                     "log": log_rows,
                     "config": _args_config(args),
+                    "best_eval_token_accuracy": float(best_eval_accuracy),
+                    "best_step": int(best_eval_step),
                 },
                 args.output_dir / "training_log.pt",
             )
@@ -564,6 +591,8 @@ def train(args: argparse.Namespace) -> None:
             "config": _args_config(args),
             "parameter_count": count_parameters(receiver),
             "log": log_rows,
+            "best_eval_token_accuracy": None if best_eval_accuracy == float("-inf") else float(best_eval_accuracy),
+            "best_step": int(best_eval_step),
         },
         final_path,
     )
@@ -571,6 +600,8 @@ def train(args: argparse.Namespace) -> None:
         {
             "log": log_rows,
             "config": _args_config(args),
+            "best_eval_token_accuracy": None if best_eval_accuracy == float("-inf") else float(best_eval_accuracy),
+            "best_step": int(best_eval_step),
         },
         training_log_path,
     )
