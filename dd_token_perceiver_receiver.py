@@ -34,6 +34,8 @@ class DDTokenPerceiverReceiver(nn.Module):
         use_packed_local: bool = False,
         use_channel_features: bool = False,
         max_channel_paths: int = 3,
+        use_delay_window_local: bool = False,
+        delay_window_radius: int = 0,
     ):
         super().__init__()
         if not isinstance(codebook_size, int) or codebook_size <= 0:
@@ -64,6 +66,8 @@ class DDTokenPerceiverReceiver(nn.Module):
             raise ValueError("symbols_per_token must be a positive integer.")
         if not isinstance(max_channel_paths, int) or max_channel_paths <= 0:
             raise ValueError("max_channel_paths must be a positive integer.")
+        if not isinstance(delay_window_radius, int) or delay_window_radius < 0:
+            raise ValueError("delay_window_radius must be a non-negative integer.")
 
         self.codebook_size = codebook_size
         self.dd_shape = dd_shape
@@ -76,10 +80,12 @@ class DDTokenPerceiverReceiver(nn.Module):
         self.use_packed_local = use_packed_local
         self.use_channel_features = use_channel_features
         self.max_channel_paths = max_channel_paths
+        self.use_delay_window_local = use_delay_window_local
+        self.delay_window_radius = delay_window_radius
         required_bins = self.num_output_tokens * symbols_per_token
-        if use_packed_local and required_bins > self.M * self.N:
+        if (use_packed_local or use_delay_window_local) and required_bins > self.M * self.N:
             raise ValueError(
-                "packed local features do not fit in DD grid: "
+                "local features do not fit in DD grid: "
                 f"{self.num_output_tokens}*{symbols_per_token}={required_bins}, "
                 f"but dd_shape has {self.M * self.N} bins."
             )
@@ -109,6 +115,15 @@ class DDTokenPerceiverReceiver(nn.Module):
                 nn.LayerNorm(embed_dim),
             )
             self.packed_local_gate = nn.Parameter(torch.tensor(1.0))
+        if self.use_delay_window_local:
+            window_size = 2 * delay_window_radius + 1
+            self.delay_window_local_embed = nn.Sequential(
+                nn.Linear(2 * symbols_per_token * window_size, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, embed_dim),
+                nn.LayerNorm(embed_dim),
+            )
+            self.delay_window_local_gate = nn.Parameter(torch.tensor(1.0))
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
@@ -134,6 +149,20 @@ class DDTokenPerceiverReceiver(nn.Module):
         positions = torch.stack([delay_grid, doppler_grid], dim=-1).reshape(self.M * self.N, 2)
         self.register_buffer("dd_positions", positions, persistent=False)
 
+        if self.use_delay_window_local:
+            base_indices = torch.arange(required_bins, dtype=torch.long).reshape(
+                self.num_output_tokens,
+                self.symbols_per_token,
+            )
+            base_delay = base_indices // self.N
+            base_doppler = base_indices % self.N
+            offsets = torch.arange(-delay_window_radius, delay_window_radius + 1, dtype=torch.long)
+            neighbor_delay = base_delay.unsqueeze(-1) + offsets.reshape(1, 1, -1)
+            delay_window_mask = (neighbor_delay >= 0) & (neighbor_delay < self.M)
+            delay_window_indices = neighbor_delay.clamp(0, self.M - 1) * self.N + base_doppler.unsqueeze(-1)
+            self.register_buffer("delay_window_indices", delay_window_indices, persistent=False)
+            self.register_buffer("delay_window_mask", delay_window_mask, persistent=False)
+
     def _packed_local_features(self, y_dd: torch.Tensor) -> torch.Tensor:
         batch_size = y_dd.shape[0]
         num_required = self.num_output_tokens * self.symbols_per_token
@@ -143,6 +172,25 @@ class DDTokenPerceiverReceiver(nn.Module):
             batch_size,
             self.num_output_tokens,
             2 * self.symbols_per_token,
+        )
+
+    def _delay_window_local_features(self, y_dd: torch.Tensor) -> torch.Tensor:
+        batch_size = y_dd.shape[0]
+        flat_dd = y_dd.reshape(batch_size, self.M * self.N)
+        flat_indices = self.delay_window_indices.reshape(-1).to(device=y_dd.device)
+        gathered = flat_dd.gather(1, flat_indices.unsqueeze(0).expand(batch_size, -1))
+        gathered = gathered.reshape(
+            batch_size,
+            self.num_output_tokens,
+            self.symbols_per_token,
+            2 * self.delay_window_radius + 1,
+        )
+        mask = self.delay_window_mask.to(device=y_dd.device).unsqueeze(0)
+        gathered = gathered * mask
+        return torch.stack([gathered.real, gathered.imag], dim=-1).reshape(
+            batch_size,
+            self.num_output_tokens,
+            2 * self.symbols_per_token * (2 * self.delay_window_radius + 1),
         )
 
     def _encode_channel_features(self, channel_features: torch.Tensor, batch_size: int, dtype: torch.dtype) -> torch.Tensor:
@@ -201,6 +249,9 @@ class DDTokenPerceiverReceiver(nn.Module):
         if self.use_packed_local:
             local_hidden = self.packed_local_embed(self._packed_local_features(y_dd))
             token_hidden = token_hidden + self.packed_local_gate * local_hidden
+        if self.use_delay_window_local:
+            delay_window_hidden = self.delay_window_local_embed(self._delay_window_local_features(y_dd))
+            token_hidden = token_hidden + self.delay_window_local_gate * delay_window_hidden
         if channel_hidden is not None:
             token_hidden = token_hidden + self.channel_gate * channel_hidden.unsqueeze(1)
         token_hidden = self.token_self_attn(token_hidden)

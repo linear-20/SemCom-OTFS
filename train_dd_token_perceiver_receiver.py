@@ -118,6 +118,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--no-awgn is only meaningful when --channel-mode channel.")
     if args.max_channel_paths <= 0:
         raise ValueError("max_channel_paths must be positive.")
+    if args.delay_window_radius < 0:
+        raise ValueError("delay_window_radius must be non-negative.")
 
 
 def make_channel(args: argparse.Namespace, snr_db: float) -> TimeVaryingMultipathChannel:
@@ -387,6 +389,8 @@ def run_dry_run(args: argparse.Namespace) -> None:
         use_packed_local=args.use_packed_local,
         use_channel_features=args.use_channel_features,
         max_channel_paths=args.max_channel_paths,
+        use_delay_window_local=args.use_delay_window_local,
+        delay_window_radius=args.delay_window_radius,
     ).to(device)
 
     token_ids = sample_token_batch(args, generator, device)
@@ -479,6 +483,8 @@ def train(args: argparse.Namespace) -> None:
         use_packed_local=args.use_packed_local,
         use_channel_features=args.use_channel_features,
         max_channel_paths=args.max_channel_paths,
+        use_delay_window_local=args.use_delay_window_local,
+        delay_window_radius=args.delay_window_radius,
     ).to(device)
     optimizer = torch.optim.AdamW(
         receiver.parameters(),
@@ -633,6 +639,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-packed-local", action="store_true")
     parser.add_argument("--use-channel-features", action="store_true")
     parser.add_argument("--max-channel-paths", type=int, default=3)
+    parser.add_argument("--use-delay-window-local", action="store_true")
+    parser.add_argument("--delay-window-radius", type=int, default=0)
     parser.add_argument("--snr-db-min", type=float, default=15.0)
     parser.add_argument("--snr-db-max", type=float, default=30.0)
     parser.add_argument("--channel-mode", type=str, default="channel", choices=["channel", "identity"])

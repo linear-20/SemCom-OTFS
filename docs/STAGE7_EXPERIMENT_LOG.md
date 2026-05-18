@@ -500,3 +500,66 @@ python eval_dd_token_receiver_checkpoint.py \
 tiny CPU train 2 steps: receiver_best.pt saved at best eval step
 eval_dd_token_receiver_checkpoint.py: successfully loaded receiver_best.pt and re-evaluated
 ```
+
+## 11. Delay-Window Local Receiver
+
+稳定重评估后，当前 channel-aware global embedding 的提升有限：
+
+```text
+blind packed-local baseline:      eval_acc ≈ 0.455
+channel-aware checkpoint 2500:    re-eval eval_acc ≈ 0.475
+channel-aware checkpoint 5000:    re-eval eval_acc ≈ 0.482
+```
+
+因此下一步加入 delay-window local observation。核心想法：
+
+```text
+原 packed-local:
+    每个 token 只读取 mapper 对应的 4 个 DD bins
+
+delay-window local:
+    对每个原始 DD bin，额外读取 delay 方向上下 radius 个邻居
+```
+
+新增参数：
+
+```text
+--use-delay-window-local
+--delay-window-radius 3
+```
+
+当 `symbols_per_token=4` 且 `delay_window_radius=3` 时，每个 token 的局部输入为：
+
+```text
+4 * (2*3 + 1) complex samples = 28 complex samples = 56 real features
+```
+
+第一组云端建议命令：
+
+```bash
+bash scripts/run_stage7b_train.sh \
+  --mode train \
+  --output-tag delaywin_r3_ca_cb256_random_delay_noawgn_5k_seed0 \
+  --codebook-size 256 \
+  --batch-size 8 \
+  --steps 5000 \
+  --use-delay-window-local \
+  --delay-window-radius 3 \
+  --use-channel-features \
+  --max-channel-paths 3 \
+  --max-delay-samples 3 \
+  --max-doppler-hz 0 \
+  --no-awgn \
+  --eval-every 250 \
+  --eval-batches 16 \
+  --save-every 250 \
+  --seed 0
+```
+
+建议优先比较：
+
+```text
+packed-local blind
+channel-aware packed-local
+delay-window local + channel-aware
+```

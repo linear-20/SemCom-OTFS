@@ -39,6 +39,8 @@ def _default_config() -> dict[str, Any]:
         "use_packed_local": False,
         "use_channel_features": False,
         "max_channel_paths": 3,
+        "use_delay_window_local": False,
+        "delay_window_radius": 0,
         "snr_db_min": 15.0,
         "snr_db_max": 30.0,
         "channel_mode": "channel",
@@ -164,6 +166,8 @@ def main() -> None:
         use_packed_local=eval_args.use_packed_local,
         use_channel_features=eval_args.use_channel_features,
         max_channel_paths=eval_args.max_channel_paths,
+        use_delay_window_local=eval_args.use_delay_window_local,
+        delay_window_radius=eval_args.delay_window_radius,
     ).to(device)
     receiver.load_state_dict(checkpoint["receiver_state_dict"])
 
