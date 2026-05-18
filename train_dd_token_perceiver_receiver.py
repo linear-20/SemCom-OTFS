@@ -116,6 +116,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--fixed-channel is only meaningful when --channel-mode channel.")
     if args.channel_mode == "identity" and args.no_awgn:
         raise ValueError("--no-awgn is only meaningful when --channel-mode channel.")
+    if args.max_channel_paths <= 0:
+        raise ValueError("max_channel_paths must be positive.")
 
 
 def make_channel(args: argparse.Namespace, snr_db: float) -> TimeVaryingMultipathChannel:
@@ -163,6 +165,39 @@ def sample_token_batch(
     )
 
 
+def make_channel_features(
+    args: argparse.Namespace,
+    path_delays: torch.Tensor | None,
+    path_gains: torch.Tensor | None,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor | None:
+    if not args.use_channel_features:
+        return None
+
+    features = torch.zeros(
+        batch_size,
+        args.max_channel_paths,
+        3,
+        device=device,
+        dtype=dtype,
+    )
+    if path_delays is None or path_gains is None:
+        return features
+
+    if path_delays.ndim != 2 or path_gains.ndim != 2:
+        raise ValueError("path_delays and path_gains must have shape [B, paths].")
+    if path_delays.shape[0] != batch_size or path_gains.shape[0] != batch_size:
+        raise ValueError("channel batch size does not match token batch size.")
+    num_paths = min(args.max_channel_paths, path_delays.shape[1], path_gains.shape[1])
+    delay_scale = max(float(args.max_delay_samples), 1.0)
+    features[:, :num_paths, 0] = path_delays[:, :num_paths].to(device=device, dtype=dtype) / delay_scale
+    features[:, :num_paths, 1] = path_gains[:, :num_paths].real.to(device=device, dtype=dtype)
+    features[:, :num_paths, 2] = path_gains[:, :num_paths].imag.to(device=device, dtype=dtype)
+    return features
+
+
 def forward_batch(
     args: argparse.Namespace,
     mapper: TokenDDMapper,
@@ -171,9 +206,11 @@ def forward_batch(
     receiver: DDTokenPerceiverReceiver,
     token_ids: torch.Tensor,
     snr_db: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
     x_dd = mapper.encode(token_ids)
     x_time = modem.modulate(x_dd)
+    path_delays = None
+    path_gains = None
     if args.channel_mode == "identity":
         y_time = x_time
     else:
@@ -181,14 +218,24 @@ def forward_batch(
             raise RuntimeError("channel must be initialized when channel_mode='channel'.")
         out = channel(x_time, snr_db=snr_db, return_info=True)
         y_time = out.y
+        path_delays = out.delays
+        path_gains = out.path_gains
     y_dd = modem.demodulate(y_time)
-    logits = receiver(y_dd)
+    channel_features = make_channel_features(
+        args,
+        path_delays,
+        path_gains,
+        batch_size=token_ids.shape[0],
+        device=token_ids.device,
+        dtype=y_dd.real.dtype,
+    )
+    logits = receiver(y_dd, channel_features=channel_features)
     targets = token_ids.reshape(token_ids.shape[0], -1)
     loss = F.cross_entropy(
         logits.reshape(-1, args.codebook_size),
         targets.reshape(-1),
     )
-    return x_dd, x_time, y_time, y_dd, logits, loss
+    return x_dd, x_time, y_time, y_dd, channel_features, logits, loss
 
 
 def make_checkpoint(
@@ -271,7 +318,7 @@ def evaluate(
     for _ in range(num_batches):
         token_ids = sample_token_batch(args, generator, device)
         snr_db = sample_snr_db(args, generator, device)
-        _x_dd, _x_time, _y_time, _y_dd, logits, loss = forward_batch(
+        _x_dd, _x_time, _y_time, _y_dd, _channel_features, logits, loss = forward_batch(
             args,
             mapper,
             modem,
@@ -325,11 +372,13 @@ def run_dry_run(args: argparse.Namespace) -> None:
         dropout=args.dropout,
         symbols_per_token=args.symbols_per_token,
         use_packed_local=args.use_packed_local,
+        use_channel_features=args.use_channel_features,
+        max_channel_paths=args.max_channel_paths,
     ).to(device)
 
     token_ids = sample_token_batch(args, generator, device)
     snr_db = sample_snr_db(args, generator, device)
-    x_dd, x_time, y_time, y_dd, logits, loss = forward_batch(
+    x_dd, x_time, y_time, y_dd, channel_features, logits, loss = forward_batch(
         args,
         mapper,
         modem,
@@ -352,6 +401,7 @@ def run_dry_run(args: argparse.Namespace) -> None:
             "x_time_shape": tuple(x_time.shape),
             "y_time_shape": tuple(y_time.shape),
             "y_dd_shape": tuple(y_dd.shape),
+            "channel_features_shape": None if channel_features is None else tuple(channel_features.shape),
             "logits_shape": tuple(logits.shape),
             "target_shape": tuple(targets.shape),
             "loss": float(loss.item()),
@@ -366,6 +416,8 @@ def run_dry_run(args: argparse.Namespace) -> None:
     print(f"x_time shape: {_shape_list(x_time)}")
     print(f"y_time shape: {_shape_list(y_time)}")
     print(f"y_dd shape: {_shape_list(y_dd)}")
+    if channel_features is not None:
+        print(f"channel_features shape: {_shape_list(channel_features)}")
     print(f"logits shape: {_shape_list(logits)}")
     print(f"target shape: {_shape_list(targets)}")
     print(f"loss value: {float(loss.item())}")
@@ -412,6 +464,8 @@ def train(args: argparse.Namespace) -> None:
         dropout=args.dropout,
         symbols_per_token=args.symbols_per_token,
         use_packed_local=args.use_packed_local,
+        use_channel_features=args.use_channel_features,
+        max_channel_paths=args.max_channel_paths,
     ).to(device)
     optimizer = torch.optim.AdamW(
         receiver.parameters(),
@@ -430,7 +484,7 @@ def train(args: argparse.Namespace) -> None:
         receiver.train()
         token_ids = sample_token_batch(args, generator, device)
         snr_db = sample_snr_db(args, generator, device)
-        _x_dd, _x_time, _y_time, _y_dd, logits, loss = forward_batch(
+        _x_dd, _x_time, _y_time, _y_dd, _channel_features, logits, loss = forward_batch(
             args,
             mapper,
             modem,
@@ -546,6 +600,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--self-attn-layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--use-packed-local", action="store_true")
+    parser.add_argument("--use-channel-features", action="store_true")
+    parser.add_argument("--max-channel-paths", type=int, default=3)
     parser.add_argument("--snr-db-min", type=float, default=15.0)
     parser.add_argument("--snr-db-max", type=float, default=30.0)
     parser.add_argument("--channel-mode", type=str, default="channel", choices=["channel", "identity"])

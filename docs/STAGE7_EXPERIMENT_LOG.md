@@ -393,3 +393,52 @@ channel-aware packed-local:
 不要训练 learnable mapper。
 不要改 channel_model.py。
 ```
+
+## 9. Channel-Aware Packed-Local Receiver 已接入
+
+本地代码已完成最小实现：
+
+```text
+DDTokenPerceiverReceiver.forward(y_dd, channel_features=None)
+train_dd_token_perceiver_receiver.py:
+    --use-channel-features
+    --max-channel-paths 3
+scripts/run_stage7b_train.sh:
+    --use-channel-features
+    --max-channel-paths 3
+```
+
+当前 channel feature 定义为每条路径 3 个实数：
+
+```text
+[delay / max_delay_samples, path_gain.real, path_gain.imag]
+```
+
+第一组云端建议命令：
+
+```bash
+bash scripts/run_stage7b_train.sh \
+  --mode train \
+  --output-tag ca_packed_cb256_random_delay_noawgn_5k_seed0 \
+  --codebook-size 256 \
+  --batch-size 8 \
+  --steps 5000 \
+  --use-packed-local \
+  --use-channel-features \
+  --max-channel-paths 3 \
+  --max-delay-samples 3 \
+  --max-doppler-hz 0 \
+  --no-awgn \
+  --eval-every 250 \
+  --eval-batches 4 \
+  --save-every 500 \
+  --seed 0
+```
+
+本地验证已通过：
+
+```text
+channel-aware dry-run: channel_features shape = [2, 3, 3]
+blind packed-local compatibility dry-run: passed
+channel-aware tiny CPU train 2 steps: loss finite, grad_norm finite, param_delta > 0
+```

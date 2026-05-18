@@ -16,6 +16,8 @@ NUM_HEADS=4
 SELF_ATTN_LAYERS=2
 DROPOUT=0.1
 USE_PACKED_LOCAL=0
+USE_CHANNEL_FEATURES=0
+MAX_CHANNEL_PATHS=3
 LR=3e-4
 WEIGHT_DECAY=1e-4
 GRAD_CLIP=1.0
@@ -60,6 +62,8 @@ Common options:
   --num-heads N
   --self-attn-layers N
   --use-packed-local
+  --use-channel-features
+  --max-channel-paths N
   --lr FLOAT
   --snr-min FLOAT
   --snr-max FLOAT
@@ -98,6 +102,8 @@ while [[ $# -gt 0 ]]; do
         --self-attn-layers) SELF_ATTN_LAYERS="$2"; shift 2 ;;
         --dropout) DROPOUT="$2"; shift 2 ;;
         --use-packed-local) USE_PACKED_LOCAL=1; shift ;;
+        --use-channel-features) USE_CHANNEL_FEATURES=1; shift ;;
+        --max-channel-paths) MAX_CHANNEL_PATHS="$2"; shift 2 ;;
         --lr) LR="$2"; shift 2 ;;
         --weight-decay) WEIGHT_DECAY="$2"; shift 2 ;;
         --grad-clip) GRAD_CLIP="$2"; shift 2 ;;
@@ -173,6 +179,7 @@ ARGS=(
     --num-heads "$NUM_HEADS"
     --self-attn-layers "$SELF_ATTN_LAYERS"
     --dropout "$DROPOUT"
+    --max-channel-paths "$MAX_CHANNEL_PATHS"
     --snr-db-min "$SNR_MIN"
     --snr-db-max "$SNR_MAX"
     --channel-mode "$CHANNEL_MODE"
@@ -204,6 +211,10 @@ if [[ "$USE_PACKED_LOCAL" -eq 1 ]]; then
     ARGS+=(--use-packed-local)
 fi
 
+if [[ "$USE_CHANNEL_FEATURES" -eq 1 ]]; then
+    ARGS+=(--use-channel-features)
+fi
+
 if [[ "$DRY_RUN" -eq 1 ]]; then
     ARGS+=(--dry-run)
 fi
@@ -215,7 +226,7 @@ echo "Device:            $DEVICE"
 echo "Steps:             $STEPS"
 echo "Batch size:        $BATCH_SIZE"
 echo "Codebook size:     $CODEBOOK_SIZE"
-echo "Model:             embed_dim=$EMBED_DIM heads=$NUM_HEADS self_layers=$SELF_ATTN_LAYERS packed_local=$USE_PACKED_LOCAL"
+echo "Model:             embed_dim=$EMBED_DIM heads=$NUM_HEADS self_layers=$SELF_ATTN_LAYERS packed_local=$USE_PACKED_LOCAL channel_features=$USE_CHANNEL_FEATURES max_channel_paths=$MAX_CHANNEL_PATHS"
 echo "Channel:           mode=$CHANNEL_MODE paths=$NUM_PATHS delay=$MAX_DELAY_SAMPLES doppler=$MAX_DOPPLER_HZ snr=$SNR_MIN..$SNR_MAX fading=$FADING fixed=$FIXED_CHANNEL no_awgn=$NO_AWGN"
 echo "Eval/Save:         every $EVAL_EVERY / $SAVE_EVERY steps, eval_batches=$EVAL_BATCHES"
 echo "Resume checkpoint: ${RESUME_CHECKPOINT:-<none>}"

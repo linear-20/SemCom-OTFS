@@ -32,6 +32,8 @@ class DDTokenPerceiverReceiver(nn.Module):
         dropout: float = 0.1,
         symbols_per_token: int = 4,
         use_packed_local: bool = False,
+        use_channel_features: bool = False,
+        max_channel_paths: int = 3,
     ):
         super().__init__()
         if not isinstance(codebook_size, int) or codebook_size <= 0:
@@ -60,6 +62,8 @@ class DDTokenPerceiverReceiver(nn.Module):
             raise ValueError("dropout must be in [0, 1).")
         if not isinstance(symbols_per_token, int) or symbols_per_token <= 0:
             raise ValueError("symbols_per_token must be a positive integer.")
+        if not isinstance(max_channel_paths, int) or max_channel_paths <= 0:
+            raise ValueError("max_channel_paths must be a positive integer.")
 
         self.codebook_size = codebook_size
         self.dd_shape = dd_shape
@@ -70,6 +74,8 @@ class DDTokenPerceiverReceiver(nn.Module):
         self.embed_dim = embed_dim
         self.symbols_per_token = symbols_per_token
         self.use_packed_local = use_packed_local
+        self.use_channel_features = use_channel_features
+        self.max_channel_paths = max_channel_paths
         required_bins = self.num_output_tokens * symbols_per_token
         if use_packed_local and required_bins > self.M * self.N:
             raise ValueError(
@@ -80,6 +86,14 @@ class DDTokenPerceiverReceiver(nn.Module):
 
         self.dd_embed = nn.Linear(4, embed_dim)
         self.token_queries = nn.Parameter(torch.randn(self.num_output_tokens, embed_dim) * 0.02)
+        if self.use_channel_features:
+            self.channel_embed = nn.Sequential(
+                nn.Linear(3 * max_channel_paths, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, embed_dim),
+                nn.LayerNorm(embed_dim),
+            )
+            self.channel_gate = nn.Parameter(torch.tensor(1.0))
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -131,7 +145,29 @@ class DDTokenPerceiverReceiver(nn.Module):
             2 * self.symbols_per_token,
         )
 
-    def forward(self, y_dd: torch.Tensor) -> torch.Tensor:
+    def _encode_channel_features(self, channel_features: torch.Tensor, batch_size: int, dtype: torch.dtype) -> torch.Tensor:
+        if not torch.is_tensor(channel_features):
+            raise TypeError("channel_features must be a torch.Tensor.")
+        if channel_features.ndim == 3:
+            if channel_features.shape[1:] != (self.max_channel_paths, 3):
+                raise ValueError(
+                    "channel_features with rank 3 must have shape "
+                    f"[B, {self.max_channel_paths}, 3]; got {list(channel_features.shape)}."
+                )
+            channel_features = channel_features.reshape(batch_size, 3 * self.max_channel_paths)
+        elif channel_features.ndim != 2:
+            raise ValueError(
+                "channel_features must have shape [B, 3*max_channel_paths] "
+                f"or [B, max_channel_paths, 3]; got {list(channel_features.shape)}."
+            )
+        if channel_features.shape != (batch_size, 3 * self.max_channel_paths):
+            raise ValueError(
+                "channel_features must have shape "
+                f"[{batch_size}, {3 * self.max_channel_paths}]; got {list(channel_features.shape)}."
+            )
+        return self.channel_embed(channel_features.to(dtype=dtype))
+
+    def forward(self, y_dd: torch.Tensor, channel_features: torch.Tensor | None = None) -> torch.Tensor:
         if not torch.is_tensor(y_dd):
             raise TypeError("y_dd must be a torch.Tensor.")
         if y_dd.ndim != 3:
@@ -154,10 +190,18 @@ class DDTokenPerceiverReceiver(nn.Module):
 
         dd_tokens = self.dd_embed(features)
         queries = self.token_queries.unsqueeze(0).expand(batch_size, -1, -1)
+        channel_hidden = None
+        if self.use_channel_features:
+            if channel_features is None:
+                raise ValueError("channel_features must be provided when use_channel_features=True.")
+            channel_hidden = self._encode_channel_features(channel_features, batch_size, real_dtype)
+            queries = queries + self.channel_gate * channel_hidden.unsqueeze(1)
         cross_output, _ = self.cross_attn(query=queries, key=dd_tokens, value=dd_tokens)
         token_hidden = self.cross_norm(queries + cross_output)
         if self.use_packed_local:
             local_hidden = self.packed_local_embed(self._packed_local_features(y_dd))
             token_hidden = token_hidden + self.packed_local_gate * local_hidden
+        if channel_hidden is not None:
+            token_hidden = token_hidden + self.channel_gate * channel_hidden.unsqueeze(1)
         token_hidden = self.token_self_attn(token_hidden)
         return self.head(token_hidden)
