@@ -844,3 +844,221 @@ cp_len 与 max_delay_samples 要配合。例如 cp_len=4 时，先用 max_delay_
 请基于 docs\CONVERSATION_SUMMARY.md 继续 Stage 7A 短训练 smoke test。
 ```
 
+## 12. 最新进展：Stage 7A / 7B
+
+### 12.1 Stage 7A 已通过
+
+本机 RTX 3060 Laptop 上已完成 GPU smoke test：
+
+```text
+scripts\run_stage7a_train.ps1 -Mode precheck
+scripts\run_stage7a_train.ps1 -Mode smoke
+```
+
+结果：
+
+```text
+loss finite，无 NaN/Inf
+grad_norm finite
+param_delta > 0
+training_log.pt / receiver_checkpoint.pt / receiver_final.pt 均已保存
+checkpoint_step_25.pt / checkpoint_step_50.pt 已保存
+```
+
+smoke 最后一次记录：
+
+```text
+step = 50
+train_loss = 5.557186
+train_token_accuracy = 0.003906
+eval_loss = 5.557599
+eval_token_accuracy = 0.001953
+grad_norm = 0.581195
+param_delta = 0.00033822
+sec_per_step = 0.0475
+```
+
+### 12.2 Stage 7B 云端环境
+
+云服务器：
+
+```text
+AutoDL
+Python 3.12
+PyTorch 2.8.0+cu128
+CUDA 12.8
+项目路径：/root/autodl-tmp/SemCom-OTFS
+```
+
+GitHub 仓库：
+
+```text
+https://github.com/linear-20/SemCom-OTFS.git
+```
+
+GitHub 直连曾超时，云端使用代理 clone 成功：
+
+```bash
+git clone https://gh-proxy.com/https://github.com/linear-20/SemCom-OTFS.git
+```
+
+### 12.3 训练脚本新增能力
+
+```text
+train_dd_token_perceiver_receiver.py:
+  --resume-checkpoint
+  --channel-mode identity / channel
+  --fixed-channel
+  --no-awgn
+  --use-packed-local
+
+scripts/run_stage7b_train.sh:
+  Linux 云端训练入口
+  支持 pilot / train / custom
+  支持 resume、信道诊断和 packed-local receiver
+```
+
+关键提交：
+
+```text
+b172822 Prepare Stage 7B receiver training
+b14da56 Add deterministic channel diagnostics
+6798ffe Add packed local receiver path
+```
+
+### 12.4 原始 blind Perceiver 诊断
+
+原始 blind Perceiver 在 identity 任务上学习信号很弱：
+
+```text
+cb256 identity 3k:
+eval_loss = 5.543744
+eval_acc = 0.0048
+
+cb32 identity 3k:
+eval_loss = 3.462734
+eval_acc = 0.0348
+```
+
+对比：
+
+```text
+ln(256)=5.545177, random acc=0.003906
+ln(32)=3.465736, random acc=0.03125
+```
+
+结论：
+
+```text
+原始 blind Perceiver 不是完全不能学，但对当前固定 packing 的 mapper 缺少归纳偏置。
+```
+
+### 12.5 Packed-Local Receiver 结论
+
+新增 `--use-packed-local`：
+
+```text
+每个 token 额外读取当前 mapper packing 下对应的 4 个复数 DD bins，
+用 MLP 编码后融合到 token hidden。
+```
+
+结果：
+
+```text
+cb32 identity + packed-local:
+eval_acc = 1.0000
+eval_loss = 0.000093
+
+cb256 identity + packed-local:
+eval_acc = 1.0000
+eval_loss = 0.000058
+
+cb256 random flat Rayleigh + AWGN + packed-local:
+eval_acc = 1.0000
+eval_loss = 0.000097
+```
+
+### 12.6 多径 delay 诊断
+
+random multipath delay + AWGN：
+
+```text
+5k:
+eval_acc = 0.5391
+eval_loss = 2.246095
+
+resume 到 10k:
+eval_acc = 0.4187
+eval_loss = 2.954157
+```
+
+fixed multipath delay / no AWGN：
+
+```text
+eval_acc = 0.9367
+eval_loss = 0.160507
+```
+
+fixed multipath delay / AWGN：
+
+```text
+eval_acc = 0.9351
+eval_loss = 0.173224
+```
+
+random multipath delay / no AWGN：
+
+```text
+eval_acc = 0.4554
+eval_loss = 2.950565
+```
+
+结论：
+
+```text
+AWGN 不是主要瓶颈。
+固定 delay 扩散可学到约 0.94 token accuracy。
+随机多径信道变化使 blind packed-local receiver 下降到约 0.45-0.54。
+下一步应做 channel-aware receiver，而不是继续盲训或直接加 Doppler。
+```
+
+## 13. 新的下一步
+
+下一步建议直接做简化版 Stage 11：
+
+```text
+Channel-aware packed-local receiver
+```
+
+目标：
+
+```text
+在 random multipath delay + no AWGN 条件下，
+利用 channel_model.py 输出的 delays 和 path_gains，
+明显优于 blind packed-local baseline eval_acc≈0.455。
+```
+
+建议改动：
+
+```text
+DDTokenPerceiverReceiver.forward(y_dd, channel_features=None)
+train_dd_token_perceiver_receiver.py 从 return_info=True 的 channel 输出中提取 delays/path_gains
+新增参数：
+  --use-channel-features
+  --max-channel-paths 3
+```
+
+暂时不要做：
+
+```text
+不要加 Doppler。
+不要上真实图片 token dataset。
+不要训练 learnable mapper。
+不要改 channel_model.py。
+```
+
+新对话启动提示可改为：
+
+```text
+请基于 docs\CONVERSATION_SUMMARY.md 和 docs\STAGE7_EXPERIMENT_LOG.md，继续实现 channel-aware packed-local receiver。
+```

@@ -473,3 +473,58 @@ downstream classification accuracy
 
 暂时不要直接跳到端到端图片训练。先把 receiver 的独立评估做扎实，再训练 learnable mapper 和图片级系统。
 
+## 12. 最新路线调整：先做 Channel-Aware Receiver
+
+Stage 7A 已完成，Stage 7B 已做云端分层诊断。关键结论如下：
+
+```text
+原始 blind Perceiver：
+identity 下学习信号很弱。
+
+packed-local receiver：
+identity：100% token accuracy
+random flat Rayleigh + AWGN：100% token accuracy
+fixed multipath delay / no AWGN：约 0.94 token accuracy
+fixed multipath delay / AWGN：约 0.93-0.94 token accuracy
+random multipath delay / no AWGN：约 0.45 token accuracy
+random multipath delay / AWGN：约 0.4-0.54 token accuracy
+```
+
+因此，当前瓶颈不是 AWGN，也不是固定 delay 扩散，而是：
+
+```text
+blind receiver 对随机多径信道变化不够稳健。
+```
+
+近期执行顺序调整为：
+
+```text
+1. 实现 channel-aware packed-local receiver
+2. 在 random multipath delay + no AWGN 下对比 blind vs channel-aware
+3. 如果 channel-aware 明显优于 blind，再加入 AWGN
+4. 再考虑 Doppler
+5. 之后再写 Stage 8 独立评估脚本，系统比较 raw / scalar / blind / channel-aware
+```
+
+建议暂时不要做：
+
+```text
+不要继续盲训 random multipath delay
+不要直接加 Doppler
+不要上真实图片 token dataset
+不要训练 learnable mapper
+不要修改 channel_model.py
+```
+
+下一步最小实现：
+
+```text
+DDTokenPerceiverReceiver.forward(y_dd, channel_features=None)
+channel_features = [delays, path_gains.real, path_gains.imag]
+channel_features -> MLP -> channel embedding
+channel embedding 注入 token hidden 或 token queries
+
+训练参数：
+--use-channel-features
+--max-channel-paths 3
+```

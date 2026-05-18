@@ -69,7 +69,29 @@ CONVERSATION_SUMMARY.md
 快速回顾当前项目状态和已完成阶段
 ```
 
-## 4. 历史归档
+## 4. Stage 7 实验日志
+
+文件：
+
+```text
+STAGE7_EXPERIMENT_LOG.md
+```
+
+用途：
+
+```text
+记录 Stage 7A/7B 的训练入口、云端实验、packed-local receiver 诊断结果，以及下一步 channel-aware receiver 的依据。
+```
+
+优先阅读场景：
+
+```text
+继续 receiver 训练
+判断某个信道设置为什么学不起来
+准备写 Stage 8 评估脚本或 Stage 11 channel-aware receiver
+```
+
+## 5. 历史归档
 
 目录：
 
@@ -82,4 +104,3 @@ archive\
 ```text
 保存旧任务说明和早期设计文档。一般不需要修改，只在需要追溯阶段性设计时查看。
 ```
-
