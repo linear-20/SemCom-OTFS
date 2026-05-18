@@ -21,10 +21,14 @@ GRAD_CLIP=1.0
 
 SNR_MIN=20
 SNR_MAX=30
+CHANNEL_MODE="channel"
 NUM_PATHS=3
 MAX_DELAY_SAMPLES=3
 MAX_DOPPLER_HZ=500
 SAMPLE_RATE=15.36e6
+FADING="rayleigh"
+FIXED_CHANNEL=0
+NO_AWGN=0
 EVAL_EVERY=""
 EVAL_BATCHES=4
 SAVE_EVERY=""
@@ -57,8 +61,12 @@ Common options:
   --lr FLOAT
   --snr-min FLOAT
   --snr-max FLOAT
+  --channel-mode channel|identity
   --max-delay-samples FLOAT
   --max-doppler-hz FLOAT
+  --fading rayleigh|rician|fixed
+  --fixed-channel
+  --no-awgn
   --eval-every N
   --eval-batches N
   --save-every N
@@ -92,10 +100,14 @@ while [[ $# -gt 0 ]]; do
         --grad-clip) GRAD_CLIP="$2"; shift 2 ;;
         --snr-min) SNR_MIN="$2"; shift 2 ;;
         --snr-max) SNR_MAX="$2"; shift 2 ;;
+        --channel-mode) CHANNEL_MODE="$2"; shift 2 ;;
         --num-paths) NUM_PATHS="$2"; shift 2 ;;
         --max-delay-samples) MAX_DELAY_SAMPLES="$2"; shift 2 ;;
         --max-doppler-hz) MAX_DOPPLER_HZ="$2"; shift 2 ;;
         --sample-rate) SAMPLE_RATE="$2"; shift 2 ;;
+        --fading) FADING="$2"; shift 2 ;;
+        --fixed-channel) FIXED_CHANNEL=1; shift ;;
+        --no-awgn) NO_AWGN=1; shift ;;
         --eval-every) EVAL_EVERY="$2"; shift 2 ;;
         --eval-batches) EVAL_BATCHES="$2"; shift 2 ;;
         --save-every) SAVE_EVERY="$2"; shift 2 ;;
@@ -160,10 +172,12 @@ ARGS=(
     --dropout "$DROPOUT"
     --snr-db-min "$SNR_MIN"
     --snr-db-max "$SNR_MAX"
+    --channel-mode "$CHANNEL_MODE"
     --num-paths "$NUM_PATHS"
     --sample-rate "$SAMPLE_RATE"
     --max-delay-samples "$MAX_DELAY_SAMPLES"
     --max-doppler-hz "$MAX_DOPPLER_HZ"
+    --fading "$FADING"
     --device "$DEVICE"
     --eval-every "$EVAL_EVERY"
     --eval-batches "$EVAL_BATCHES"
@@ -173,6 +187,14 @@ ARGS=(
 
 if [[ -n "$RESUME_CHECKPOINT" ]]; then
     ARGS+=(--resume-checkpoint "$RESUME_CHECKPOINT")
+fi
+
+if [[ "$FIXED_CHANNEL" -eq 1 ]]; then
+    ARGS+=(--fixed-channel)
+fi
+
+if [[ "$NO_AWGN" -eq 1 ]]; then
+    ARGS+=(--no-awgn)
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -187,7 +209,7 @@ echo "Steps:             $STEPS"
 echo "Batch size:        $BATCH_SIZE"
 echo "Codebook size:     $CODEBOOK_SIZE"
 echo "Model:             embed_dim=$EMBED_DIM heads=$NUM_HEADS self_layers=$SELF_ATTN_LAYERS"
-echo "Channel:           paths=$NUM_PATHS delay=$MAX_DELAY_SAMPLES doppler=$MAX_DOPPLER_HZ snr=$SNR_MIN..$SNR_MAX"
+echo "Channel:           mode=$CHANNEL_MODE paths=$NUM_PATHS delay=$MAX_DELAY_SAMPLES doppler=$MAX_DOPPLER_HZ snr=$SNR_MIN..$SNR_MAX fading=$FADING fixed=$FIXED_CHANNEL no_awgn=$NO_AWGN"
 echo "Eval/Save:         every $EVAL_EVERY / $SAVE_EVERY steps, eval_batches=$EVAL_BATCHES"
 echo "Resume checkpoint: ${RESUME_CHECKPOINT:-<none>}"
 echo

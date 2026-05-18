@@ -112,6 +112,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("snr_db_min must be <= snr_db_max.")
     if args.resume_checkpoint is not None and not args.resume_checkpoint.is_file():
         raise FileNotFoundError(f"resume checkpoint does not exist: {args.resume_checkpoint}")
+    if args.channel_mode == "identity" and args.fixed_channel:
+        raise ValueError("--fixed-channel is only meaningful when --channel-mode channel.")
+    if args.channel_mode == "identity" and args.no_awgn:
+        raise ValueError("--no-awgn is only meaningful when --channel-mode channel.")
 
 
 def make_channel(args: argparse.Namespace, snr_db: float) -> TimeVaryingMultipathChannel:
@@ -124,7 +128,8 @@ def make_channel(args: argparse.Namespace, snr_db: float) -> TimeVaryingMultipat
         fading=args.fading,
         rician_k_db=args.rician_k_db,
         doppler_distribution=args.doppler_distribution,
-        randomize_each_forward=True,
+        add_awgn=not args.no_awgn,
+        randomize_each_forward=not args.fixed_channel,
         fractional_delays=not args.integer_delays,
         complex_dtype="complex64",
         seed=args.seed,
@@ -162,15 +167,20 @@ def forward_batch(
     args: argparse.Namespace,
     mapper: TokenDDMapper,
     modem: OTFSModem,
-    channel: TimeVaryingMultipathChannel,
+    channel: TimeVaryingMultipathChannel | None,
     receiver: DDTokenPerceiverReceiver,
     token_ids: torch.Tensor,
     snr_db: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     x_dd = mapper.encode(token_ids)
     x_time = modem.modulate(x_dd)
-    out = channel(x_time, snr_db=snr_db, return_info=True)
-    y_time = out.y
+    if args.channel_mode == "identity":
+        y_time = x_time
+    else:
+        if channel is None:
+            raise RuntimeError("channel must be initialized when channel_mode='channel'.")
+        out = channel(x_time, snr_db=snr_db, return_info=True)
+        y_time = out.y
     y_dd = modem.demodulate(y_time)
     logits = receiver(y_dd)
     targets = token_ids.reshape(token_ids.shape[0], -1)
@@ -248,7 +258,7 @@ def evaluate(
     args: argparse.Namespace,
     mapper: TokenDDMapper,
     modem: OTFSModem,
-    channel: TimeVaryingMultipathChannel,
+    channel: TimeVaryingMultipathChannel | None,
     receiver: DDTokenPerceiverReceiver,
     generator: torch.Generator,
     device: torch.device,
@@ -302,7 +312,9 @@ def run_dry_run(args: argparse.Namespace) -> None:
         device=str(device),
     )
     modem = OTFSModem(dd_shape=dd_shape, cp_len=args.cp_len, device=str(device))
-    channel = make_channel(args, snr_db=float(args.snr_db_max)).to(device)
+    channel = None
+    if args.channel_mode == "channel":
+        channel = make_channel(args, snr_db=float(args.snr_db_max)).to(device)
     receiver = DDTokenPerceiverReceiver(
         codebook_size=args.codebook_size,
         dd_shape=dd_shape,
@@ -385,7 +397,9 @@ def train(args: argparse.Namespace) -> None:
         device=str(device),
     )
     modem = OTFSModem(dd_shape=dd_shape, cp_len=args.cp_len, device=str(device))
-    channel = make_channel(args, snr_db=float(args.snr_db_max)).to(device)
+    channel = None
+    if args.channel_mode == "channel":
+        channel = make_channel(args, snr_db=float(args.snr_db_max)).to(device)
     receiver = DDTokenPerceiverReceiver(
         codebook_size=args.codebook_size,
         dd_shape=dd_shape,
@@ -529,6 +543,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--snr-db-min", type=float, default=15.0)
     parser.add_argument("--snr-db-max", type=float, default=30.0)
+    parser.add_argument("--channel-mode", type=str, default="channel", choices=["channel", "identity"])
     parser.add_argument("--num-paths", type=int, default=3)
     parser.add_argument("--sample-rate", type=float, default=15.36e6)
     parser.add_argument("--max-delay-samples", type=float, default=3.0)
@@ -536,6 +551,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fading", type=str, default="rayleigh", choices=["rayleigh", "rician", "fixed"])
     parser.add_argument("--rician-k-db", type=float, default=8.0)
     parser.add_argument("--doppler-distribution", type=str, default="jakes", choices=["jakes", "uniform"])
+    parser.add_argument("--fixed-channel", action="store_true")
+    parser.add_argument("--no-awgn", action="store_true")
     parser.add_argument("--integer-delays", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default=None)
