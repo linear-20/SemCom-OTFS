@@ -2,8 +2,10 @@
 
 The model consumes a complex delay-Doppler grid [B, M, N], embeds each DD bin
 from real/imag plus normalized 2D position, then uses learned token queries to
-cross-attend to the DD tokens. It intentionally contains no CNN and has no
-dependency on the mapper, modem, or channel modules.
+cross-attend to the DD tokens. Optionally, it can also read the contiguous DD
+bins used by the current packed token-to-DD mapper as a token-local auxiliary
+feature. It intentionally contains no CNN and has no dependency on the mapper,
+modem, or channel modules.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ class DDTokenPerceiverReceiver(nn.Module):
         num_heads: int = 8,
         self_attn_layers: int = 4,
         dropout: float = 0.1,
+        symbols_per_token: int = 4,
+        use_packed_local: bool = False,
     ):
         super().__init__()
         if not isinstance(codebook_size, int) or codebook_size <= 0:
@@ -54,6 +58,8 @@ class DDTokenPerceiverReceiver(nn.Module):
             raise ValueError("self_attn_layers must be a non-negative integer.")
         if dropout < 0.0 or dropout >= 1.0:
             raise ValueError("dropout must be in [0, 1).")
+        if not isinstance(symbols_per_token, int) or symbols_per_token <= 0:
+            raise ValueError("symbols_per_token must be a positive integer.")
 
         self.codebook_size = codebook_size
         self.dd_shape = dd_shape
@@ -62,6 +68,15 @@ class DDTokenPerceiverReceiver(nn.Module):
         self.token_shape = token_shape
         self.num_output_tokens = token_shape[0] * token_shape[1]
         self.embed_dim = embed_dim
+        self.symbols_per_token = symbols_per_token
+        self.use_packed_local = use_packed_local
+        required_bins = self.num_output_tokens * symbols_per_token
+        if use_packed_local and required_bins > self.M * self.N:
+            raise ValueError(
+                "packed local features do not fit in DD grid: "
+                f"{self.num_output_tokens}*{symbols_per_token}={required_bins}, "
+                f"but dd_shape has {self.M * self.N} bins."
+            )
 
         self.dd_embed = nn.Linear(4, embed_dim)
         self.token_queries = nn.Parameter(torch.randn(self.num_output_tokens, embed_dim) * 0.02)
@@ -72,6 +87,14 @@ class DDTokenPerceiverReceiver(nn.Module):
             batch_first=True,
         )
         self.cross_norm = nn.LayerNorm(embed_dim)
+        if self.use_packed_local:
+            self.packed_local_embed = nn.Sequential(
+                nn.Linear(2 * symbols_per_token, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, embed_dim),
+                nn.LayerNorm(embed_dim),
+            )
+            self.packed_local_gate = nn.Parameter(torch.tensor(1.0))
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
@@ -96,6 +119,17 @@ class DDTokenPerceiverReceiver(nn.Module):
         delay_grid, doppler_grid = torch.meshgrid(delay_pos, doppler_pos, indexing="ij")
         positions = torch.stack([delay_grid, doppler_grid], dim=-1).reshape(self.M * self.N, 2)
         self.register_buffer("dd_positions", positions, persistent=False)
+
+    def _packed_local_features(self, y_dd: torch.Tensor) -> torch.Tensor:
+        batch_size = y_dd.shape[0]
+        num_required = self.num_output_tokens * self.symbols_per_token
+        flat_dd = y_dd.reshape(batch_size, self.M * self.N)[:, :num_required]
+        packed = flat_dd.reshape(batch_size, self.num_output_tokens, self.symbols_per_token)
+        return torch.stack([packed.real, packed.imag], dim=-1).reshape(
+            batch_size,
+            self.num_output_tokens,
+            2 * self.symbols_per_token,
+        )
 
     def forward(self, y_dd: torch.Tensor) -> torch.Tensor:
         if not torch.is_tensor(y_dd):
@@ -122,5 +156,8 @@ class DDTokenPerceiverReceiver(nn.Module):
         queries = self.token_queries.unsqueeze(0).expand(batch_size, -1, -1)
         cross_output, _ = self.cross_attn(query=queries, key=dd_tokens, value=dd_tokens)
         token_hidden = self.cross_norm(queries + cross_output)
+        if self.use_packed_local:
+            local_hidden = self.packed_local_embed(self._packed_local_features(y_dd))
+            token_hidden = token_hidden + self.packed_local_gate * local_hidden
         token_hidden = self.token_self_attn(token_hidden)
         return self.head(token_hidden)

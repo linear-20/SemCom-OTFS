@@ -323,6 +323,8 @@ def run_dry_run(args: argparse.Namespace) -> None:
         num_heads=args.num_heads,
         self_attn_layers=args.self_attn_layers,
         dropout=args.dropout,
+        symbols_per_token=args.symbols_per_token,
+        use_packed_local=args.use_packed_local,
     ).to(device)
 
     token_ids = sample_token_batch(args, generator, device)
@@ -408,6 +410,8 @@ def train(args: argparse.Namespace) -> None:
         num_heads=args.num_heads,
         self_attn_layers=args.self_attn_layers,
         dropout=args.dropout,
+        symbols_per_token=args.symbols_per_token,
+        use_packed_local=args.use_packed_local,
     ).to(device)
     optimizer = torch.optim.AdamW(
         receiver.parameters(),
@@ -541,6 +545,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=8)
     parser.add_argument("--self-attn-layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--use-packed-local", action="store_true")
     parser.add_argument("--snr-db-min", type=float, default=15.0)
     parser.add_argument("--snr-db-max", type=float, default=30.0)
     parser.add_argument("--channel-mode", type=str, default="channel", choices=["channel", "identity"])
