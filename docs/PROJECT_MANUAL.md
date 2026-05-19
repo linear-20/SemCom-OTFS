@@ -1,118 +1,93 @@
-# 项目文件使用说明书
+# 项目使用说明书
 
-## 1. 项目定位
+本文档是项目的稳定使用手册，一般不频繁大改。它只说明项目定位、文件作用、常用命令和参数含义；具体实验结果看 `STAGE7_EXPERIMENT_LOG.md`，下一步安排看 `ROADMAP_NEXT.md`。
 
-本项目研究的是：
+## 1. 项目目标
 
-```text
-tokens 不经过 bit / QAM 映射，直接映射到 OTFS 的 delay-Doppler, DD, 域进行传输。
-```
-
-当前主链路为：
+本项目研究一条不经过传统 bit / QAM 映射的 OTFS token 传输链路：
 
 ```text
-图片
+image
 -> visual tokens
--> DD 域复数码字
--> OTFS 时域波形
--> AWGN / 多径多普勒信道
--> OTFS 解调
--> 接收 DD grid
--> 恢复 tokens
--> 重建图片
+-> DD-domain complex representation
+-> OTFS modulation
+-> wireless channel
+-> OTFS demodulation
+-> DD-domain receiver
+-> recovered tokens
+-> reconstructed image
 ```
 
-运行 Python 时优先使用：
+核心思想：
+
+```text
+token 直接映射到 OTFS delay-Doppler 域复数码字
+```
+
+而不是：
+
+```text
+token -> bits -> channel coding -> QAM -> OTFS
+```
+
+本地项目路径：
+
+```text
+F:\OTFS下的token传输
+```
+
+本地 Python / PyTorch 环境优先使用：
 
 ```text
 E:\pytorch\python.exe
 ```
 
-项目根目录：
+云端 AutoDL 项目路径：
 
 ```text
-F:\OTFS下的token传输
+/root/autodl-tmp/SemCom-OTFS
 ```
 
-## 2. 目录结构
+GitHub 仓库：
 
 ```text
-F:\OTFS下的token传输
-|-- image_tokenizer.py
-|-- token_dd_mapper.py
-|-- otfs_modem.py
-|-- channel_model.py
-|-- run_token_otfs_roundtrip.py
-|-- run_token_otfs_awgn_sweep.py
-|-- run_token_otfs_channel_sweep.py
-|-- run_token_otfs_channel_equalized.py
-|-- dd_token_perceiver_receiver.py
-|-- train_dd_token_perceiver_receiver.py
-|-- inputs\
-|-- outputs\
-|-- docs\
-|-- pretrained_models\
-`-- LlamaGen\
+https://github.com/linear-20/SemCom-OTFS.git
 ```
 
-建议只把源码放在根目录，把图片、实验产物和文档分别放进对应目录。
-
-## 3. 文档目录
+## 2. 当前主文件
 
 ```text
-docs\README.md
+image_tokenizer.py
+token_dd_mapper.py
+otfs_modem.py
+channel_model.py
+run_token_otfs_roundtrip.py
+run_token_otfs_awgn_sweep.py
+run_token_otfs_channel_sweep.py
+run_token_otfs_channel_equalized.py
+dd_token_perceiver_receiver.py
+train_dd_token_perceiver_receiver.py
+eval_dd_token_receiver_checkpoint.py
+scripts/run_stage7b_train.sh
 ```
 
-文档索引，说明每个 Markdown 文件是什么。
+文档目录当前只保留三份主文档：
 
 ```text
-docs\PROJECT_MANUAL.md
+docs/PROJECT_MANUAL.md          使用说明书
+docs/STAGE7_EXPERIMENT_LOG.md   实验日志
+docs/ROADMAP_NEXT.md            下一步规划书
 ```
 
-本文件。说明项目文件、脚本作用、参数怎么改、图片怎么传。
+历史材料放在：
 
 ```text
-docs\ROADMAP_NEXT.md
+docs/archive/
 ```
 
-后续规划书。说明后面每一阶段要做什么、写什么脚本、怎么验收。
+## 3. 模块说明
 
-```text
-docs\CONVERSATION_SUMMARY.md
-```
-
-对话压缩摘要。新对话时可以直接作为上下文给模型，防止遗忘和幻觉。
-
-```text
-docs\archive\
-```
-
-历史阶段文档和旧任务说明，通常不用改。
-
-## 4. 输入和输出目录
-
-输入图片放这里：
-
-```text
-inputs\
-```
-
-实验输出按阶段放这里：
-
-```text
-outputs\tokenizer\              图片 tokenizer 输出
-outputs\stage1_token_dd\        token -> DD -> token 输出
-outputs\stage2_otfs\            DD -> OTFS -> DD 输出
-outputs\stage3_roundtrip\       token -> DD -> OTFS -> DD -> token 输出
-outputs\stage4_awgn\            AWGN 扫描输出
-outputs\stage5_channel\         多径多普勒信道 baseline 输出
-outputs\stage6_equalized\       scalar 均衡诊断输出
-outputs\stage7_perceiver_receiver\  Perceiver 接收机 dry-run / 训练输出
-```
-
-## 5. 源码文件说明
-
-### 5.1 image_tokenizer.py
+### 3.1 image_tokenizer.py
 
 作用：
 
@@ -129,23 +104,11 @@ ImageTokenizer
 主要方法：
 
 ```text
-encode(image) -> token_ids
-decode(token_ids) -> reconstructed image
+encode(image) -> token_ids [B, 16, 16]
+decode(token_ids) -> reconstructed image [B, 3, 256, 256]
 ```
 
-常用参数：
-
-```text
---input              输入图片路径
---checkpoint         LlamaGen VQ tokenizer 权重
---llamagen-root      LlamaGen 源码目录
---image-size         图片尺寸，默认 256
---output             重建图片输出路径
---save-tokens        token 文件保存路径
---device             cpu / cuda / cuda:0
-```
-
-典型输出：
+典型 tokenizer 信息：
 
 ```text
 token_ids shape: [1, 16, 16]
@@ -155,7 +118,7 @@ image_size: 256
 downsample_ratio: 16
 ```
 
-### 5.2 token_dd_mapper.py
+### 3.2 token_dd_mapper.py
 
 作用：
 
@@ -171,73 +134,36 @@ token t -> codeword x_t in C^K
 
 不做 bit 转换，也不做 QAM。
 
-主要类：
+默认设置：
 
 ```text
-TokenDDMapper
+codebook_size = 16384
+symbols_per_token = 4
+dd_shape = (32, 32)
 ```
 
-主要方法：
-
-```text
-encode(token_ids) -> dd_grid
-decode(dd_grid) -> recovered token_ids
-roundtrip
-token_accuracy
-token_error_rate
-```
-
-常用参数：
-
-```text
---tokens              输入 token .pt 文件
---output-dd           输出 DD grid 文件
---output-tokens       输出恢复 token 文件
---symbols-per-token   每个 token 占用多少个 DD 复符号
---dd-shape M N        DD grid 大小
---seed                固定随机码本种子
---device              cpu / cuda / cuda:0
-```
-
-重要约束：
-
-```text
-token 数量 * symbols_per_token <= M * N
-```
-
-当前默认设置：
+原因：
 
 ```text
 16 * 16 tokens * 4 symbols/token = 32 * 32 DD bins
 ```
 
-所以：
+主要方法：
 
 ```text
-symbols_per_token = 4
-dd_shape = 32 32
+encode(token_ids) -> dd_grid [B, 32, 32] complex
+decode(dd_grid, token_shape=(16,16)) -> recovered token_ids [B, 16, 16]
+roundtrip
+token_accuracy
+token_error_rate
 ```
 
-刚好铺满 DD grid。
-
-如果把 `symbols_per_token` 改成 8，那么 `32 x 32` 不够，需要改成例如：
-
-```text
---dd-shape 32 64
-```
-
-或者：
-
-```text
---dd-shape 64 32
-```
-
-### 5.3 otfs_modem.py
+### 3.3 otfs_modem.py
 
 作用：
 
 ```text
-DD grid <-> OTFS 时域波形
+DD grid <-> OTFS time waveform
 ```
 
 主要类：
@@ -249,23 +175,17 @@ OTFSModem
 主要方法：
 
 ```text
-isfft
-sfft
-modulate(x_dd)
-demodulate(time_signal)
+modulate(x_dd) -> time_signal
+demodulate(time_signal) -> y_dd
 roundtrip
 normalized_mse
 max_abs_error
 ```
 
-常用参数：
+默认采用：
 
 ```text
---input-dd       输入 DD grid 文件
---output-time    输出 OTFS 时域波形
---output-dd      输出恢复 DD grid
---cp-len         循环前缀长度
---device         cpu / cuda / cuda:0
+torch.fft, norm="ortho"
 ```
 
 时域长度：
@@ -277,13 +197,11 @@ time_len = N * (M + cp_len)
 例如：
 
 ```text
-M = 32
-N = 32
-cp_len = 4
-time_len = 32 * (32 + 4) = 1152
+dd_shape=(32,32), cp_len=0 -> [B, 1024]
+dd_shape=(32,32), cp_len=4 -> [B, 1152]
 ```
 
-### 5.4 channel_model.py
+### 3.4 channel_model.py
 
 作用：
 
@@ -291,7 +209,7 @@ time_len = 32 * (32 + 4) = 1152
 时域复基带时变多径多普勒信道
 ```
 
-不要改这个文件，后续只复用。
+不要改这个文件，后续实验只复用。
 
 主要类：
 
@@ -309,31 +227,25 @@ y[n] = sum_p h_p exp(j 2*pi*f_p*n/fs) x[n - tau_p] + w[n]
 输入 shape：
 
 ```text
-[time] 或 [batch, time]
+[time] 或 [batch, time] complex
 ```
 
-注意：它是时域信道，所以必须接在：
+注意：它是时域信道，必须接在 `OTFSModem.modulate()` 之后，不能直接接 DD grid。
+
+常用参数：
 
 ```text
-OTFSModem.modulate()
-```
-
-之后，不能直接接 DD grid。
-
-常改参数：
-
-```text
-num_paths              路径数
-sample_rate            采样率
-snr_db                 信噪比
-max_delay_samples      最大延迟，单位 samples
-max_doppler_hz         最大多普勒，单位 Hz
-fading                 rayleigh / rician / fixed
-rician_k_db            Rician K 因子
-doppler_distribution   jakes / uniform
-randomize_each_forward 每次 forward 是否随机信道
-fractional_delays      是否使用分数延迟
-seed                   随机种子
+num_paths
+sample_rate
+snr_db
+max_delay_samples
+max_doppler_hz
+fading: rayleigh / rician / fixed
+rician_k_db
+doppler_distribution: jakes / uniform
+randomize_each_forward
+fractional_delays
+seed
 ```
 
 当 `return_info=True` 时可得到：
@@ -348,113 +260,13 @@ out.dopplers_hz
 out.conditioning
 ```
 
-### 5.5 run_token_otfs_roundtrip.py
+### 3.5 dd_token_perceiver_receiver.py
 
 作用：
 
 ```text
-无信道 token-OTFS-token 闭环
+DD 域学习型 token receiver
 ```
-
-链路：
-
-```text
-tokens -> DD grid -> OTFS time -> DD grid -> recovered tokens
-```
-
-用于确认无信道情况下链路没有 shape、FFT、码本问题。
-
-### 5.6 run_token_otfs_awgn_sweep.py
-
-作用：
-
-```text
-OTFS 时域加入 AWGN，并扫描 SNR
-```
-
-常用参数：
-
-```text
---snr-db-list          SNR 列表，例如 0 5 10 15 20 25 30
---num-trials           每个 SNR 的独立噪声 trial 数
---save-last            保存最后一次 trial 细节
---symbols-per-token    每个 token 占用 DD 符号数
---dd-shape M N         DD grid 大小
---cp-len               循环前缀长度
---seed                 随机种子
---device               cpu / cuda / cuda:0
-```
-
-### 5.7 run_token_otfs_channel_sweep.py
-
-作用：
-
-```text
-接入 channel_model.py，做多径多普勒 baseline
-```
-
-链路：
-
-```text
-tokens -> DD -> OTFS -> 多径多普勒信道 -> OTFS 解调 -> DD -> tokens
-```
-
-常用参数：
-
-```text
---num-paths
---sample-rate
---max-delay-samples
---max-doppler-hz
---fading
---rician-k-db
---doppler-distribution
---randomize-each-forward
---integer-delays
-```
-
-建议 sanity check：
-
-```text
-num_paths = 1
-max_delay_samples = 0
-max_doppler_hz = 0
-snr_db = 60
-```
-
-理论上 token accuracy 应接近 1.0。
-
-### 5.8 run_token_otfs_channel_equalized.py
-
-作用：
-
-```text
-比较 raw decode 和 oracle scalar equalization
-```
-
-scalar 均衡：
-
-```text
-alpha = sum(Y_DD * conj(X_DD)) / sum(abs(X_DD)^2)
-Y_eq = Y_DD / alpha
-```
-
-注意：
-
-```text
-这是 oracle 诊断方法，因为它使用了发送端 X_DD。
-它不是实际可部署接收机。
-```
-
-### 5.9 dd_token_perceiver_receiver.py
-
-作用：
-
-```text
-DD 域 Perceiver 学习型接收机模型
-```
-
-不使用 CNN。
 
 输入：
 
@@ -468,81 +280,113 @@ y_dd complex [B, M, N]
 logits [B, Ht*Wt, codebook_size]
 ```
 
-结构：
+当前支持的接收机分支：
 
 ```text
-real/imag + DD 位置
--> DD bin embedding
--> learned token queries
--> cross-attention
--> token self-attention
--> classifier
+blind Perceiver:
+    只使用 Y_DD
+
+packed-local:
+    每个 token 额外读取 mapper packing 对应的 4 个 DD bins
+
+channel-aware:
+    使用 delays 和 path_gains 形成 CSI embedding
+
+delay-window local:
+    每个 token 读取原始 4 个 bins 及 delay 方向邻域
 ```
 
-### 5.10 train_dd_token_perceiver_receiver.py
-
-作用：
+常用结构参数：
 
 ```text
-Perceiver receiver 训练脚本骨架
-```
-
-目前已支持：
-
-```text
---dry-run
-```
-
-dry-run 只检查前向链路：
-
-```text
-random tokens
--> DD
--> OTFS
--> channel
--> DD
--> Perceiver
--> logits
--> CE loss
-```
-
-不正式训练。
-
-常改参数：
-
-```text
---codebook-size
---token-shape H W
---symbols-per-token
---dd-shape M N
---cp-len
---batch-size
---num-steps
---lr
 --embed-dim
 --num-heads
 --self-attn-layers
 --dropout
---snr-db-min
---snr-db-max
---num-paths
---max-delay-samples
---max-doppler-hz
---device
---dry-run
+--use-packed-local
+--use-channel-features
+--max-channel-paths
+--use-delay-window-local
+--delay-window-radius
 ```
 
-## 6. 图片怎么传
+### 3.6 train_dd_token_perceiver_receiver.py
 
-### 第一步：把图片放进 inputs
-
-例如：
+作用：
 
 ```text
-inputs\your_image.png
+训练 DD-token receiver
 ```
 
-### 第二步：图片转 tokens
+训练链路：
+
+```text
+random tokens
+-> TokenDDMapper.encode
+-> X_DD
+-> OTFSModem.modulate
+-> TimeVaryingMultipathChannel
+-> OTFSModem.demodulate
+-> DDTokenPerceiverReceiver
+-> token CE loss
+```
+
+重要能力：
+
+```text
+--dry-run
+--resume-checkpoint
+--channel-mode identity / channel
+--fixed-channel
+--no-awgn
+--use-packed-local
+--use-channel-features
+--use-delay-window-local
+```
+
+训练输出：
+
+```text
+training_log.pt
+receiver_checkpoint.pt
+receiver_final.pt
+receiver_best.pt
+checkpoint_step_*.pt
+```
+
+`receiver_best.pt` 保存规则：
+
+```text
+每次 eval 后，如果 eval_token_accuracy 刷新历史最高值，就保存 best checkpoint。
+```
+
+### 3.7 eval_dd_token_receiver_checkpoint.py
+
+作用：
+
+```text
+加载已有 receiver checkpoint，用更多 eval_batches 做稳定重评估。
+```
+
+常用命令：
+
+```bash
+python eval_dd_token_receiver_checkpoint.py \
+  --checkpoint outputs/stage7b_receiver_train/EXPERIMENT_NAME/receiver_best.pt \
+  --eval-batches 128 \
+  --batch-size 8 \
+  --device cuda
+```
+
+输出：
+
+```text
+*_reeval.pt
+```
+
+## 4. 常用本地命令
+
+### 4.1 图片转 token
 
 ```powershell
 & 'E:\pytorch\python.exe' image_tokenizer.py `
@@ -555,14 +399,7 @@ inputs\your_image.png
   --device cuda
 ```
 
-得到：
-
-```text
-outputs\tokenizer\tokens_your_image.pt
-outputs\tokenizer\recon_your_image.png
-```
-
-### 第三步：跑无信道 token-OTFS-token 闭环
+### 4.2 无信道 token-OTFS-token 闭环
 
 ```powershell
 & 'E:\pytorch\python.exe' run_token_otfs_roundtrip.py `
@@ -578,174 +415,78 @@ outputs\tokenizer\recon_your_image.png
   --device cuda
 ```
 
-### 第四步：跑 AWGN 实验
+### 4.3 Stage 7B 云端训练入口
 
-```powershell
-& 'E:\pytorch\python.exe' run_token_otfs_awgn_sweep.py `
-  --tokens "F:\OTFS下的token传输\outputs\tokenizer\tokens_your_image.pt" `
-  --output "F:\OTFS下的token传输\outputs\stage4_awgn\awgn_sweep_your_image.pt" `
-  --snr-db-list 0 5 10 15 20 25 30 `
-  --num-trials 100 `
-  --symbols-per-token 4 `
-  --dd-shape 32 32 `
-  --cp-len 0 `
-  --seed 0 `
-  --device cuda `
-  --save-last
+```bash
+bash scripts/run_stage7b_train.sh --help
 ```
 
-## 7. 参数怎么改
+推荐从脚本入口跑，不直接手写长命令：
 
-### 7.1 symbols_per_token
+```bash
+bash scripts/run_stage7b_train.sh \
+  --mode train \
+  --output-tag delaywin_r2_ca_cb256_random_delay_noawgn_5k_seed0 \
+  --codebook-size 256 \
+  --batch-size 8 \
+  --steps 5000 \
+  --use-delay-window-local \
+  --delay-window-radius 2 \
+  --use-channel-features \
+  --max-channel-paths 3 \
+  --max-delay-samples 3 \
+  --max-doppler-hz 0 \
+  --no-awgn \
+  --eval-every 250 \
+  --eval-batches 16 \
+  --save-every 250 \
+  --seed 0
+```
 
-含义：
+### 4.4 稳定重评估
+
+```bash
+python eval_dd_token_receiver_checkpoint.py \
+  --checkpoint outputs/stage7b_receiver_train/delaywin_r2_ca_cb256_random_delay_noawgn_5k_seed0/receiver_best.pt \
+  --eval-batches 128 \
+  --batch-size 8 \
+  --device cuda
+```
+
+## 5. 关键参数说明
 
 ```text
-每个 token 占用多少个 DD 复符号
+codebook_size:
+    token 词表大小。Stage 7B 先用 256。
+
+symbols_per_token:
+    每个 token 占用的 DD 复符号数。当前默认 4。
+
+dd_shape:
+    DD grid 大小。当前默认 32 32。
+
+cp_len:
+    循环前缀长度。多径 delay 实验中通常 cp_len=4。
+
+max_delay_samples:
+    最大路径延迟。当前 random delay 实验用 3。
+
+max_doppler_hz:
+    最大多普勒。当前先用 0，暂不加 Doppler。
+
+no_awgn:
+    关闭 AWGN，用于先隔离 random delay 问题。
+
+eval_batches:
+    训练中可用 16，正式重评估建议 128 或更高。
 ```
 
-影响：
+## 6. 注意事项
 
 ```text
-越大，单个 token 冗余越强，抗噪声可能更好，但 token rate 更低。
+不要修改 channel_model.py。
+channel_model.py 是时域信道，只能接 OTFS time waveform。
+cp_len 应与 max_delay_samples 匹配，当前 cp_len=4, max_delay_samples=3。
+Stage 7B 先用 random token maps，不要只用单张图片 tokens 训练。
+目前不要训练 learnable mapper，也不要直接加 Doppler。
 ```
-
-改它时通常也要改 `dd_shape`。
-
-### 7.2 dd_shape
-
-含义：
-
-```text
-DD grid 大小，写作 M N
-```
-
-约束：
-
-```text
-token_shape[0] * token_shape[1] * symbols_per_token <= M * N
-```
-
-### 7.3 cp_len
-
-含义：
-
-```text
-OTFS / OFDM 符号循环前缀长度
-```
-
-影响时域长度：
-
-```text
-time_len = N * (M + cp_len)
-```
-
-多径信道下建议：
-
-```text
-cp_len >= max_delay_samples
-```
-
-至少初期实验中建议这样配。
-
-### 7.4 seed
-
-含义：
-
-```text
-固定随机码本和随机实验的种子
-```
-
-当前 `TokenDDMapper` 使用确定性随机码本。换 seed 就等于换一套 token-DD 码本。
-
-### 7.5 snr-db-list
-
-含义：
-
-```text
-要扫描的 SNR 点
-```
-
-例如：
-
-```text
---snr-db-list 0 5 10 15 20 25 30
-```
-
-### 7.6 num-trials
-
-含义：
-
-```text
-每个 SNR / 信道设置下重复多少次随机 trial
-```
-
-越大统计越稳定，但运行越慢。
-
-### 7.7 max_delay_samples
-
-含义：
-
-```text
-信道最大延迟扩展，单位 samples
-```
-
-建议：
-
-```text
-cp_len = 4 时，先用 max_delay_samples <= 3
-```
-
-### 7.8 max_doppler_hz
-
-含义：
-
-```text
-最大多普勒频移，单位 Hz
-```
-
-越大，时变越强，接收越难。
-
-### 7.9 codebook_size
-
-含义：
-
-```text
-token 词表大小
-```
-
-训练 Perceiver receiver 时，建议先小后大：
-
-```text
-256 -> 1024 -> 4096 -> 16384
-```
-
-不要一开始直接训练 16384 类 softmax。
-
-## 8. 当前已知 baseline 结果
-
-固定码本：
-
-```text
-symbols_per_token = 4
-dd_shape = 32 32
-```
-
-结果：
-
-```text
-无信道：token accuracy = 1.0
-AWGN 0 dB：约 1% token accuracy
-AWGN 10 dB：约 66% token accuracy
-AWGN 20 / 30 dB：token accuracy = 1.0
-多径多普勒无均衡：很低且不稳定
-oracle scalar 均衡：有改善，但有限
-```
-
-结论：
-
-```text
-复杂信道下主要问题不是整体幅度/相位旋转，而是 DD 域扩散/卷积失真。
-下一步重点是学习型 DD 域接收机。
-```
-

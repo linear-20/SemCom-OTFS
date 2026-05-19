@@ -1,376 +1,383 @@
-# 后续规划：Token 直接到 OTFS DD 域传输
+# 下一步规划书
 
-## 1. 当前状态
+本文档只写从当前状态出发的后续路线。实验细节与历史结果看 `STAGE7_EXPERIMENT_LOG.md`，程序使用方法看 `PROJECT_MANUAL.md`。
 
-项目已经打通了基础链路：
+## 1. 当前判断
 
-```text
-图片 -> visual tokens -> DD grid -> OTFS 时域波形
-     -> AWGN / 多径多普勒信道
-     -> 接收 DD grid -> 恢复 tokens
-```
-
-已完成模块：
+项目已经完成基础链路和 Stage 7B 的关键诊断：
 
 ```text
-image_tokenizer.py                    图片 <-> visual tokens
-token_dd_mapper.py                    固定码本 token <-> DD grid 映射
-otfs_modem.py                         DD grid <-> OTFS 时域波形
-channel_model.py                      可复用的时变多径信道
-run_token_otfs_roundtrip.py           无信道 token-OTFS-token 闭环
-run_token_otfs_awgn_sweep.py          AWGN baseline
-run_token_otfs_channel_sweep.py       多径多普勒 baseline
-run_token_otfs_channel_equalized.py   oracle scalar 均衡 baseline
-dd_token_perceiver_receiver.py        DD 域 Perceiver 接收机模型
-train_dd_token_perceiver_receiver.py  接收机训练骨架和 dry-run
-```
-
-当前关键实验结论：
-
-```text
-无信道：token accuracy = 1.0
-AWGN 高 SNR：baseline 测试中 token accuracy = 1.0
-多径多普勒无均衡：token accuracy 很低且不稳定
-oracle scalar 均衡：有改善，但无法消除 DD 扩散
-Perceiver receiver dry-run：前向链路和 loss 正常
-```
-
-因此，下一步核心问题是：
-
-```text
-Y_DD -> token logits -> recovered token IDs
-```
-
-也就是训练学习型 DD 域接收机，而不是恢复 bit、QAM 符号，或者马上做图像重建。
-
-## 2. 三类 token decode 的区别
-
-项目里现在有三种不同层面的 decode：
-
-```text
-ImageTokenizer.decode:
-    visual token IDs -> reconstructed image
-
-TokenDDMapper.decode:
-    DD grid -> 最近邻码本匹配 -> token IDs
-
-DDTokenPerceiverReceiver:
-    received DD grid -> token logits -> argmax -> token IDs
-```
-
-Perceiver receiver 的目标是在复杂信道下替代 `TokenDDMapper.decode`。
-
-完整关系是：
-
-```text
-received DD
--> Perceiver receiver
+图片/token
+-> DD grid
+-> OTFS time waveform
+-> random multipath delay channel
+-> received DD grid
+-> learned token receiver
 -> recovered tokens
--> ImageTokenizer.decode
--> reconstructed image
 ```
 
-也就是说，学习型接收机负责通信层 token 判决；图像 tokenizer 的 decoder 仍然负责 token 到图片的还原。
-
-## 3. 阶段 7A：短训练 Smoke Test
-
-### 目标
-
-先验证 Perceiver receiver 真的能训练。
-
-链路：
+当前最可靠结论：
 
 ```text
-random tokens
--> fixed TokenDDMapper
--> fixed OTFSModem
--> random channel_model
--> received DD
--> DDTokenPerceiverReceiver
--> CE loss
+blind packed-local baseline:
+    random multipath delay + no AWGN 下约 0.455 token accuracy
+
+channel-aware packed-local:
+    稳定重评估约 0.482
+
+delay-window r=2 + channel-aware:
+    稳定重评估约 0.574
+
+delay-window r=2 no CSI:
+    稳定重评估约 0.484
 ```
 
-这一阶段不追求最终性能，只检查：
+因此当前瓶颈可以表述为：
 
 ```text
-loss 不是 NaN / Inf
-梯度能回传
-参数会更新
-checkpoint 和 log 能保存
-train accuracy 至少有波动
+随机多径 delay 会造成 DD 域局部扩散。
+receiver 既需要 delay 方向邻域观测，也需要 CSI。
+只给全局 CSI 或只扩大局部窗口都不够强。
 ```
 
-### 建议命令
+## 2. 最近目标
 
-```powershell
-& 'E:\pytorch\python.exe' train_dd_token_perceiver_receiver.py `
-  --output-dir "F:\OTFS下的token传输\outputs\stage7_perceiver_receiver_smoke_train" `
-  --codebook-size 256 `
-  --token-shape 16 16 `
-  --symbols-per-token 4 `
-  --dd-shape 32 32 `
-  --cp-len 4 `
-  --batch-size 2 `
-  --num-steps 50 `
-  --embed-dim 128 `
-  --num-heads 4 `
-  --self-attn-layers 2 `
-  --snr-db-min 20 `
-  --snr-db-max 30 `
-  --num-paths 3 `
-  --max-delay-samples 3 `
-  --max-doppler-hz 500 `
-  --device cuda `
-  --eval-every 10 `
-  --eval-batches 1 `
-  --save-every 25
-```
-
-### 验收标准
+近期不要跳到真实图片、learnable mapper 或 Doppler。先把 Stage 7B 的结论做扎实：
 
 ```text
-训练正常结束
-loss 无 NaN / Inf
-receiver_checkpoint.pt 已保存
-receiver_final.pt 已保存
-training_log.pt 已保存
-loss 和 accuracy 有记录
+目标 1：确认 delay-window + CSI 在多个 seed 下稳定优于 baseline。
+目标 2：完成 radius 消融和 CSI 消融。
+目标 3：确认加入 AWGN 后性能是否保持。
+目标 4：整理为 Stage 7B 可写进论文/报告的实验表。
 ```
 
-如果这一步失败，不要扩大模型，先修训练脚本。
+## 3. 近期实验矩阵
 
-## 4. 阶段 7B：小规模正式 Receiver 训练
-
-### 目标
-
-证明 Perceiver receiver 相比下面两个 baseline 有提升：
-
-```text
-raw nearest-neighbor decode
-oracle scalar equalization
-```
-
-建议先从小规模开始：
+统一基础配置：
 
 ```text
 codebook_size = 256
-batch_size = 4 或 8
-num_steps = 1000 到 5000
-embed_dim = 128 或 256
-self_attn_layers = 2 到 4
+batch_size = 8
+num_steps = 5000
+num_paths = 3
+max_delay_samples = 3
+max_doppler_hz = 0
+cp_len = 4
+eval_batches for train = 16
+eval_batches for re-eval = 128
 ```
 
-### 记录指标
+### 3.1 已完成对照
+
+| Experiment | Stable Eval Acc | 结论 |
+|---|---:|---|
+| blind packed-local | ≈0.455 | baseline |
+| channel-aware packed-local | 0.482 | CSI alone helps little |
+| delay-window r=1 + CSI | 0.540 | window helps |
+| delay-window r=2 + CSI | 0.574 | current best |
+| delay-window r=3 + CSI | 0.565 | larger not always better |
+| delay-window r=2 no CSI | 0.484 | window alone not enough |
+
+### 3.2 下一组优先实验：多 seed 验证
+
+目的：
 
 ```text
-train loss
-train token accuracy
-eval loss
-eval token accuracy
-SNR range
-channel configuration
+确认 r=2 + CSI 的提升不是 seed0 偶然。
 ```
 
-### 验收标准
+建议跑：
 
 ```text
-eval accuracy 高于随机猜测
-eval accuracy 高于同信道条件下 raw nearest-neighbor
-多次运行训练稳定
+seed = 1
+seed = 2
 ```
 
-## 5. 阶段 8：Perceiver 独立评估脚本
+命令模板，seed1：
 
-### 新增脚本
-
-```text
-eval_dd_token_perceiver_receiver.py
+```bash
+bash scripts/run_stage7b_train.sh \
+  --mode train \
+  --output-tag delaywin_r2_ca_cb256_random_delay_noawgn_5k_seed1 \
+  --codebook-size 256 \
+  --batch-size 8 \
+  --steps 5000 \
+  --use-delay-window-local \
+  --delay-window-radius 2 \
+  --use-channel-features \
+  --max-channel-paths 3 \
+  --max-delay-samples 3 \
+  --max-doppler-hz 0 \
+  --no-awgn \
+  --eval-every 250 \
+  --eval-batches 16 \
+  --save-every 250 \
+  --seed 1
 ```
 
-### 目标
-
-加载训练好的 Perceiver checkpoint，在独立脚本里评估。
-
-需要比较：
+seed2 只改：
 
 ```text
-raw nearest-neighbor decode
+--output-tag delaywin_r2_ca_cb256_random_delay_noawgn_5k_seed2
+--seed 2
+```
+
+每个 seed 跑完后都做：
+
+```bash
+python eval_dd_token_receiver_checkpoint.py \
+  --checkpoint outputs/stage7b_receiver_train/delaywin_r2_ca_cb256_random_delay_noawgn_5k_seed1/receiver_best.pt \
+  --eval-batches 128 \
+  --batch-size 8 \
+  --device cuda
+```
+
+验收标准：
+
+```text
+如果 seed0/1/2 平均 token accuracy 稳定高于 0.53，
+则可确认 delay-window r=2 + CSI 是当前 Stage 7B 最佳方案。
+```
+
+## 4. 第二优先实验：加入 AWGN
+
+前提：
+
+```text
+多 seed 验证通过后再做。
+```
+
+目的：
+
+```text
+验证 delay-window r=2 + CSI 在 random multipath delay + AWGN 下是否仍优于 baseline。
+```
+
+建议配置：
+
+```text
+SNR = 20-30 dB
+max_doppler_hz = 0
+no_awgn = false
+```
+
+命令：
+
+```bash
+bash scripts/run_stage7b_train.sh \
+  --mode train \
+  --output-tag delaywin_r2_ca_cb256_random_delay_awgn_5k_seed0 \
+  --codebook-size 256 \
+  --batch-size 8 \
+  --steps 5000 \
+  --use-delay-window-local \
+  --delay-window-radius 2 \
+  --use-channel-features \
+  --max-channel-paths 3 \
+  --max-delay-samples 3 \
+  --max-doppler-hz 0 \
+  --snr-min 20 \
+  --snr-max 30 \
+  --eval-every 250 \
+  --eval-batches 16 \
+  --save-every 250 \
+  --seed 0
+```
+
+重评估：
+
+```bash
+python eval_dd_token_receiver_checkpoint.py \
+  --checkpoint outputs/stage7b_receiver_train/delaywin_r2_ca_cb256_random_delay_awgn_5k_seed0/receiver_best.pt \
+  --eval-batches 128 \
+  --batch-size 8 \
+  --device cuda
+```
+
+预期：
+
+```text
+如果 no AWGN 为 0.57 左右，
+20-30 dB AWGN 下应不低于 0.50。
+```
+
+## 5. 第三优先实验：模型结构小改
+
+如果多 seed 或 AWGN 后发现性能不稳定，再考虑结构小改，不要马上加大系统复杂度。
+
+可选改动：
+
+```text
+1. delay-window local 使用 channel-conditioned gate
+2. 将 delay-window radius 与 CSI delay 动态关联
+3. 对 local window 加 attention pooling，而不是简单 MLP flatten
+```
+
+优先级建议：
+
+```text
+先做 attention pooling。
+再做 channel-conditioned gate。
+最后再考虑动态 window。
+```
+
+原因：
+
+```text
+r=3 不如 r=2，说明窗口变大后会引入无关信息。
+attention pooling 可能让 receiver 在窗口内自动挑有用 bins。
+```
+
+## 6. 暂缓事项
+
+### 6.1 暂缓 Doppler
+
+原因：
+
+```text
+当前只处理 random delay 就还没有完全稳定。
+Doppler 会引入另一个维度的扩散和时变，过早加入会让诊断变混。
+```
+
+进入 Doppler 前的条件：
+
+```text
+delay-window r=2 + CSI 在 random delay + AWGN 下稳定优于 baseline。
+```
+
+### 6.2 暂缓真实图片 token dataset
+
+原因：
+
+```text
+当前 receiver 仍在通信层诊断阶段。
+真实 token 分布会引入数据分布偏置，不利于定位信道/receiver 问题。
+```
+
+进入真实图片 token 前的条件：
+
+```text
+random token 下 receiver 架构和评估脚本稳定。
+```
+
+### 6.3 暂缓 learnable mapper
+
+原因：
+
+```text
+当前固定 mapper + receiver 的瓶颈还没完全处理清楚。
+过早训练 mapper 会混合 mapper 和 receiver 两类变量。
+```
+
+进入 learnable mapper 前的条件：
+
+```text
+固定 mapper 下有明确、稳定、可复现的 receiver baseline。
+```
+
+## 7. 中期路线
+
+### Stage 8：系统评估脚本
+
+目标：
+
+```text
+写一个统一评估脚本，系统比较：
+raw nearest-neighbor
 oracle scalar equalization
-Perceiver receiver
+blind packed-local
+channel-aware packed-local
+delay-window local + CSI
 ```
 
-并且三者必须使用相同信道条件。
-
-### 建议扫描参数
+建议脚本名：
 
 ```text
-SNR: 0, 5, 10, 15, 20, 25, 30 dB
-max_delay_samples: 0, 1, 2, 3
-max_doppler_hz: 0, 100, 500, 1000
-num_paths: 1, 3, 6
+eval_stage8_receiver_suite.py
 ```
 
-### 输出
-
-建议保存到：
+输出：
 
 ```text
-outputs/stage8_perceiver_eval/perceiver_eval.pt
+outputs/stage8_receiver_suite/*.pt
+outputs/stage8_receiver_suite/*.csv
 ```
 
-内容包括：
+指标：
 
 ```text
-raw accuracy / TER
-scalar-equalized accuracy / TER
-Perceiver accuracy / TER
+token accuracy
+token error rate
+sequence accuracy
+eval loss
 channel config
 model config
+checkpoint path
 ```
 
-### 验收标准
+### Stage 9：真实图片 token dataset
 
-Perceiver 在至少一个有意义的多径多普勒设置下，明显优于 raw nearest-neighbor。
+目标：
 
-## 6. 阶段 9：真实图片 Token 数据集
+```text
+批量图片 -> tokenizer -> token maps dataset
+```
 
-### 新增脚本
+建议脚本：
 
 ```text
 build_token_dataset.py
 ```
 
-### 目标
-
-从随机 token maps 过渡到真实 visual token maps。
-
-流程：
-
-```text
-image folder
--> ImageTokenizer.encode
--> token maps [N, 16, 16]
--> dataset .pt file
-```
-
-建议输出：
+输出：
 
 ```text
 datasets/visual_token_maps.pt
 ```
 
-内容包括：
+### Stage 10：真实 token receiver 训练
+
+目标：
 
 ```text
-token_ids
-grid_size
-codebook_size
-image_size
-downsample_ratio
-source_image_paths
+比较 random tokens 与 real image tokens 上的 receiver 表现。
 ```
 
-### 为什么要做
-
-随机 token maps 适合验证通信链路是否可学习，但真实图片 tokens 的分布不是均匀随机的，而是有结构、有频率偏置的。后续图像重建和语义通信必须用真实 token 分布。
-
-### 验收标准
+训练脚本新增：
 
 ```text
-dataset 中包含多张图片的 token maps
-ImageTokenizer.decode 能从 dataset 中的样本重建图片
-训练脚本支持从该 dataset 采样
+--token-dataset
+--token-source random / real / mixed
 ```
 
-## 7. 阶段 10：基于真实 Token 的 Receiver 训练
+### Stage 11：Doppler-aware receiver
 
-### 修改脚本
-
-扩展：
+前提：
 
 ```text
-train_dd_token_perceiver_receiver.py
+random delay + AWGN 已稳定。
 ```
 
-加入参数：
+逐步加入：
 
 ```text
---token-dataset datasets/visual_token_maps.pt
+max_doppler_hz = 100
+max_doppler_hz = 500
+max_doppler_hz = 1000
 ```
 
-支持三种模式：
+CSI 扩展：
 
 ```text
-random-token training
-real-token training
-mixed random + real-token training
+[delay, doppler, gain.real, gain.imag]
 ```
 
-### 实验对比
+### Stage 12：Learnable token-to-DD mapper
+
+目标：
 
 ```text
-train random / test random
-train random / test real
-train real / test real
-train mixed / test real
-```
-
-### 验收标准
-
-真实图片 tokens 上的性能要被实际测量，而不是只根据随机 tokens 的结果推断。
-
-## 8. 阶段 11：Channel-Aware Perceiver Receiver
-
-### 目标
-
-利用 `channel_model.py` 输出的信道信息。
-
-可用信息包括：
-
-```text
-delays
-dopplers_hz
-path_gains
-conditioning
-```
-
-### 可能设计
-
-把信道参数编码成一个向量：
-
-```text
-channel_embedding = MLP([delay, doppler, gain_real, gain_imag])
-```
-
-然后注入 token queries：
-
-```text
-queries = learned_queries + channel_embedding
-```
-
-或者把信道信息作为额外 tokens 拼到 DD token sequence 中，让 Perceiver cross-attention 自己读取。
-
-### 对比对象
-
-```text
-blind Perceiver:       g(Y_DD)
-channel-aware version: g(Y_DD, CSI)
-```
-
-### 验收标准
-
-Channel-aware receiver 在变化的 delay / Doppler / path 条件下，比 blind receiver 更稳健。
-
-## 9. 阶段 12：可学习 Token-to-DD Mapper
-
-### 目标
-
-把固定随机 `TokenDDMapper` 替换成可训练 mapper。
-
-建议新增：
-
-```text
-learnable_token_dd_mapper.py
+固定 receiver 诊断清楚后，再训练 mapper。
 ```
 
 基本形式：
@@ -378,48 +385,13 @@ learnable_token_dd_mapper.py
 ```text
 nn.Embedding(codebook_size, 2 * symbols_per_token)
 -> complex codewords
--> power normalization
+-> average power normalization
 -> DD grid packing
 ```
 
-训练链路：
+### Stage 13：完整图片级评估
 
-```text
-tokens
--> learnable mapper
--> OTFS
--> channel
--> Perceiver receiver
--> token CE
-```
-
-### 必须加入约束
-
-```text
-平均发射功率归一化
-可选 PAPR regularization
-可选 codeword diversity regularization
-```
-
-### 验收标准
-
-在相同 DD 资源数和平均功率下：
-
-```text
-learned mapper + Perceiver
-```
-
-优于：
-
-```text
-fixed random mapper + Perceiver
-```
-
-## 10. 阶段 13：完整图片级评估
-
-### 目标
-
-闭合完整图片链路：
+链路：
 
 ```text
 image
@@ -429,102 +401,20 @@ image
 -> reconstructed image
 ```
 
-### 指标
-
-Token 指标：
+指标：
 
 ```text
 token accuracy
 token error rate
-sequence accuracy
-```
-
-图片指标：
-
-```text
-MSE / PSNR
+PSNR
 SSIM
-LPIPS，可选
-可视化对比
+LPIPS, optional
+CLIP similarity, optional
 ```
 
-语义或任务指标，可选：
+## 8. 当前下一步一句话
 
 ```text
-CLIP similarity
-downstream classification accuracy
-```
-
-### 验收标准
-
-随着信道恶化，重建图片应该平滑退化；学习型 receiver / mapper 应该优于 raw baseline。
-
-## 11. 近期推荐执行顺序
-
-建议按这个顺序走：
-
-```text
-1. Stage 7A：短训练 smoke test
-2. Stage 7B：codebook_size=256 的小规模正式 receiver 训练
-3. Stage 8：写独立评估脚本，对比 raw / scalar / Perceiver
-4. 扩展 receiver 到 codebook_size=1024
-5. 构建真实图片 token dataset
-```
-
-暂时不要直接跳到端到端图片训练。先把 receiver 的独立评估做扎实，再训练 learnable mapper 和图片级系统。
-
-## 12. 最新路线调整：先做 Channel-Aware Receiver
-
-Stage 7A 已完成，Stage 7B 已做云端分层诊断。关键结论如下：
-
-```text
-原始 blind Perceiver：
-identity 下学习信号很弱。
-
-packed-local receiver：
-identity：100% token accuracy
-random flat Rayleigh + AWGN：100% token accuracy
-fixed multipath delay / no AWGN：约 0.94 token accuracy
-fixed multipath delay / AWGN：约 0.93-0.94 token accuracy
-random multipath delay / no AWGN：约 0.45 token accuracy
-random multipath delay / AWGN：约 0.4-0.54 token accuracy
-```
-
-因此，当前瓶颈不是 AWGN，也不是固定 delay 扩散，而是：
-
-```text
-blind receiver 对随机多径信道变化不够稳健。
-```
-
-近期执行顺序调整为：
-
-```text
-1. 实现 channel-aware packed-local receiver
-2. 在 random multipath delay + no AWGN 下对比 blind vs channel-aware
-3. 如果 channel-aware 明显优于 blind，再加入 AWGN
-4. 再考虑 Doppler
-5. 之后再写 Stage 8 独立评估脚本，系统比较 raw / scalar / blind / channel-aware
-```
-
-建议暂时不要做：
-
-```text
-不要继续盲训 random multipath delay
-不要直接加 Doppler
-不要上真实图片 token dataset
-不要训练 learnable mapper
-不要修改 channel_model.py
-```
-
-下一步最小实现：
-
-```text
-DDTokenPerceiverReceiver.forward(y_dd, channel_features=None)
-channel_features = [delays, path_gains.real, path_gains.imag]
-channel_features -> MLP -> channel embedding
-channel embedding 注入 token hidden 或 token queries
-
-训练参数：
---use-channel-features
---max-channel-paths 3
+先跑 delay-window r=2 + CSI 的 seed1 / seed2，并用 128-batch re-eval 验证均值。
+如果稳定，再加入 AWGN；暂时不要加 Doppler、真实图片 token 或 learnable mapper。
 ```
